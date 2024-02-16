@@ -8,10 +8,10 @@
 #include <ctype.h>
 #include <string.h>
 #include <sys/types.h>
-#include <signal.h>
 #include <sys/wait.h>
-#include <inttypes.h>
+#include <signal.h>
 #include <fcntl.h>
+#include <inttypes.h>
 
 #ifndef MAX_WORDS
 #define MAX_WORDS 512
@@ -20,6 +20,9 @@
 char *words[MAX_WORDS];
 size_t wordsplit(char const *line);
 char * expand(char const *word);
+
+// Allows getline() to be interrupted without error
+void sigint_handler(int sig);
 
 int main(int argc, char *argv[])
 {
@@ -36,11 +39,11 @@ int main(int argc, char *argv[])
   char *line = NULL;
   size_t n = 0;
   
-  /* Save original sigactions to restore for child process */
+  // Save original sigactions to restore for child process 
   struct sigaction SIGINT_oldact;
   struct sigaction SIGTSTP_oldact;
 
-  /* Creating sigaction structs for SIGINT and SIGTSTP handling */
+  // Creating sigaction structs for SIGINT and SIGTSTP handling 
   struct sigaction SIGINT_action = {0}, ignore_action = {0};
   // ignore SIGSTP in interactive mode
   ignore_action.sa_handler = SIG_IGN;
@@ -52,55 +55,57 @@ int main(int argc, char *argv[])
   sigfillset(&SIGINT_action.sa_mask);
   // No flags set
   SIGINT_action.sa_flags = 0;
-  
+      
   for (;;) {
+
 prompt:;
-    /* TODO: Manage background processes */
+
+    // Background processes 
     int bgFlag = 0;
     pid_t bgChildPid;
     int bgChildStatus;
     int corrBgStatus;
-    while ((bgChild = waitpid(0, &bgChildStatus, WNOHANG | WUNTRACED)) > 0) {
+    while ((bgChildPid = waitpid(0, &bgChildStatus, WNOHANG | WUNTRACED)) > 0) {
       if (WIFEXITED(bgChildStatus)) {
         corrBgStatus = WEXITSTATUS(bgChildStatus);
-        fprintf(stderr, "Child process % done. Exity status %d. \n",
+        fprintf(stderr, "Child process %jd done. Exit status %d.\n", 
             (intmax_t)bgChildPid, corrBgStatus);
       }
       else if (WIFSIGNALED(bgChildStatus)) {
         corrBgStatus = WTERMSIG(bgChildStatus);
-        fprintf(stderr, "Child process %jd done. Signaled %d./n",
+        fprintf(stderr, "Child process %jd done. Signaled %d.\n", 
             (intmax_t)bgChildPid, corrBgStatus);
       }
       else if (WIFSTOPPED(bgChildStatus)) {
-        fprintf(stderr, "Child process %jd stopped. Continuing.\n", 
-            (intmax_t)bgChildPid);
-            kill(bgChildPid, 18);
+          // Send SIGCONT signal to that process
+          fprintf(stderr, "Child process %jd stopped. Continuing.\n", 
+              (intmax_t)bgChildPid);
+          kill(bgChildPid, 18);
       }
     }
-  
+
     if (input == stdin) {
-    
-      /* Print prompt for interactive mode */
+      // in interactive 
       char *prompt = getenv("PS1");
       if (prompt == NULL) {
         prompt = "";
       }
       fprintf(stderr, "%s", prompt);
-    
-      /* Handle Signals */
-      sigaction(SIGTSTP, &ignore_action, &SIGTSTP_oldact);
-      sig(SIGINT, &SIGINT_action, &SIGINT_oldact);
+      
+      /* handlers to handle signals */
+      sigaction(SIGTSTP, &ignore_action, &SIGTSTP_oldact);    
+      sigaction(SIGINT, &SIGINT_action, &SIGINT_oldact);
     }
     ssize_t line_len = getline(&line, &n, input);
     if (feof(input) != 0) {
       exit(0);
     }
-    
+
     if (line_len < 0) {
-      /* Handle ^C interrupt*/
+      // if interrupted with ^C
       if (errno == EINTR) {
         clearerr(input);
-        fprintf(stderr, "/n");
+        fprintf(stderr, "\n");
         goto prompt;
       }
       err(1, "%s", input_fn);
@@ -111,26 +116,26 @@ prompt:;
     
     size_t nwords = wordsplit(line);
     for (size_t i = 0; i < nwords; ++i) {
-      fprintf(stderr, "Word %zu: %s\n", i, words[i]);
       char *exp_word = expand(words[i]);
       free(words[i]);
       words[i] = exp_word;
     }
-    
-    // set SIGINT to ignore in interactive mode
+
+    // set SIGINT to ignore for interactive mode
     if (input == stdin) {
       sigaction(SIGINT, &ignore_action, NULL);
     }
-    
+
+    // Run this command in background 
     if (strcmp(words[nwords - 1], "&") == 0) {
-      nwords--;
+      nwords--;  // Remove the last word 
       bgFlag = 1;
     }
-    
-    /*CD function */
+
+    // CD Function 
     if (strcmp(words[0], "cd") == 0) {
       if (nwords > 1) {
-        if (chdir(words[1]) == -1 {
+        if (chdir(words[1]) == -1) {
           fprintf(stderr, "directory not found\n");
         }
       }
@@ -139,10 +144,10 @@ prompt:;
       }
       continue;
     }
-   
-    /* Exit function */
+
+    // Exit Function
     if (strcmp(words[0], "exit") == 0) {
-      if (words > 2) {
+      if (nwords > 2) {
         fprintf(stderr, "too many arguments\n");
         goto prompt;
       }
@@ -156,14 +161,14 @@ prompt:;
         }
         else {
           exit(value);
-        }  
+        }
       }
       else {
         char *exp_word = expand("$?");
-        for (;;) exit(atoi(exp_word))
+        for (;;) exit(atoi(exp_word));
       }
     }
-    
+
     int childStatus;
     pid_t childPid = fork();
 
@@ -173,19 +178,19 @@ prompt:;
         continue;
       case 0: {
         // child process
-        /* change the sigactions */
+        // change the sigactions 
         if (input == stdin) {
           sigaction(SIGINT, &SIGINT_oldact, NULL);
           sigaction(SIGTSTP, &SIGTSTP_oldact, NULL);
         }
         
-        /* Parsing the words list */
+        // Parse words list 
         char* args[nwords + 1];
         size_t args_len = 0;
         int childInput;
         int childOutput;
         for (size_t i = 0; i < nwords; ++i) {
-          /* Redirected input file */
+          // Redirect input file 
           if (strcmp(words[i], "<") == 0) {
             if (strcmp(words[i + 1], "")) {
               childInput = open(words[i + 1], O_RDONLY | O_CLOEXEC);
@@ -203,7 +208,7 @@ prompt:;
               continue;
             }
           }
-          /* Redirected output file truncated */ 
+          // Redirect output file truncate
           else if (strcmp(words[i], ">") == 0) {
             if (strcmp(words[i + 1], "")) {
               childOutput = open(words[i + 1], 
@@ -222,8 +227,8 @@ prompt:;
               continue;
             }
           }
-          
-          /* Redirected output file appended */
+
+          // Redirected output file appended 
           else if (strcmp(words[i], ">>") == 0) {
             if (strcmp(words[i + 1], "")) {
               childOutput = open(words[i + 1], 
@@ -242,7 +247,7 @@ prompt:;
               continue;
             }
           }
-          
+
           else {
             args_len++;
             args[i] = words[i];
@@ -251,6 +256,7 @@ prompt:;
         args[args_len] = NULL;
         
         execvp(args[0], args);
+        // If we come back, there was an error
         perror("smallsh");
         _exit(EXIT_FAILURE);
         break;
@@ -284,10 +290,10 @@ prompt:;
           asprintf(&bgPid, "%jd", (intmax_t)childPid);
           setenv("BG_PID", bgPid, 1);
         }
-      }  // End of defualt
-    }  // End of switch case 
-  }  // End of infinite loop
-}  //End of main
+      }  // End default brace
+    }  // End switch case brace
+  } // End for infinite loop brace
+}  // End of main brace
 
 char *words[MAX_WORDS] = {0};
 
@@ -410,9 +416,9 @@ expand(char const *word)
     if (c == '!') {
       char* bg_pid = getenv("BG_PID");
       if (!bg_pid) build_str("", NULL);
-      else build_str(bg_pid, NUll);
+      else build_str(bg_pid, NULL);
     }
-    else if (c == '$') {;
+    else if (c == '$') {
       char* pid;
       asprintf(&pid, "%jd", (intmax_t)getpid());
       if (pid < 0) err(1, "getpid() or asprintf() failure");
@@ -424,6 +430,7 @@ expand(char const *word)
       else build_str(fg_status, NULL);
     }
     else if (c == '{') {
+      // using end -1 and start + 2 as the pointers for the parameter
       size_t length = end - 1 - (start + 2);
       char temp[length + 1];
       memcpy(temp, start + 2, length);
@@ -439,3 +446,9 @@ expand(char const *word)
   }
   return build_str(start, NULL);
 }
+
+void
+sigint_handler(int sig) {
+  return;
+}
+
